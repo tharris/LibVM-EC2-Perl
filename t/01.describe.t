@@ -15,13 +15,13 @@ use Test::More tests => TEST_COUNT;
 use EC2TestSupport;
 
 # this script tests all the describe() functions and associated features such as tags.
-require_ok('VM::EC2');
+use_ok('VM::EC2',':standard');
 reset_declined();
 
 SKIP: {
 skip "account information unavailable",TEST_COUNT-1 unless setup_environment();
 
-my $ec2 = VM::EC2->new(-print_error=>1) or BAIL_OUT("Can't load VM::EC2 module");
+my $ec2 = VM::EC2->new(-print_error=>1,-region=>'us-east-1') or BAIL_OUT("Can't load VM::EC2 module");
 ok($ec2,'VM::EC2->new');
 
 my $natty = $ec2->describe_images(TEST_IMAGE);  # defined in t/EC2TestSupport
@@ -35,7 +35,7 @@ ok($natty,'describe image by id');
 is($natty->imageLocation,'755060610258/ebs/ubuntu-images/ubuntu-natty-11.04-i386-server-20110426-nano','$image->imageLocation');
 like($natty->description,'/http:\/\/nolar\.info\/nano-ami/','$image->description');
 is($natty->architecture,'i386','$image->architecture');
-is(($natty->blockDeviceMapping)[0],'/dev/sda1=snap-90ed13fe:1:true','$image->blockDeviceMapping');
+is(($natty->blockDeviceMapping)[0],'/dev/sda1=snap-90ed13fe:1:true:standard','$image->blockDeviceMapping');
 is($natty->imageState,'available','$image->imageState');
 
 my $owner = $natty->imageOwnerId();

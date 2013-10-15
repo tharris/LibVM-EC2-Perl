@@ -16,10 +16,10 @@ my $build = Module::Build->new(
       'Digest::SHA'  => '5.47',
       'URI::URL'     => '5.03',
       'XML::Simple'  => '2.18',
+      'File::Path'   => '2.08',
+      'String::Approx' => '3.26',
+      'JSON'         => 0,
     },
-    recommends        => {
-    },
-    create_makefile_pl => 'passthrough',
     build_class        => 'Module::Build',
     );
 

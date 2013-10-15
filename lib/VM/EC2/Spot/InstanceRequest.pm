@@ -6,9 +6,7 @@ VM::EC2::Spot::InstanceRequest - Object describing an Amazon EC2 spot instance r
 
 =head1 SYNOPSIS
 
-  use VM::EC2;
-
-  $ec2     = VM::EC2->new(...);
+See L<VM::EC2/SPOT INSTANCES>.
 
 =head1 DESCRIPTION
 
@@ -34,6 +32,9 @@ These object methods are supported:
 
  fault       -- Fault code for the request, if any, an
                 instance of VM::EC2::Error.
+
+ status      -- The status code and status message describing the
+                Spot Instance request.
 
  validFrom   -- Start date and time of the request.
 
@@ -74,6 +75,13 @@ object.
 
 =head2 $state  = $request->current_status
 
+Refreshes the request information and returns its status as a
+VM::EC2::Spot::Status.  This will string interpolate as the status
+code, such as "fulfilled". You may also call its object methods to
+get the time of the last update and full message.
+
+=head2 $state  = $request->current_state
+
 Refreshes the request information and returns its state, such as "open".
 
 =head2 $request->refresh
@@ -103,11 +111,12 @@ please see DISCLAIMER.txt for disclaimers of warranty.
 
 use strict;
 use VM::EC2::Spot::LaunchSpecification;
+use VM::EC2::Spot::Status;
 use base 'VM::EC2::Generic';
 
 sub valid_fields {
     my $self = shift;
-    return qw(spotInstanceRequestId spotPrice type state fault
+    return qw(spotInstanceRequestId spotPrice type state fault status
               validFrom validUntil launchGroup availabilityZoneGroup
               launchedAvailabilityZone launchSpecification instanceId
               createTime productDescription);
@@ -115,6 +124,12 @@ sub valid_fields {
 
 sub primary_id {
     shift->spotInstanceRequestId;
+}
+
+sub status {
+    my $self = shift;
+    my $status = $self->SUPER::status;
+    return VM::EC2::Spot::Status->new($status,$self->ec2,$self->xmlns,$self->requestId);
 }
 
 sub launchSpecification {
@@ -137,11 +152,19 @@ sub fault {
 
 sub refresh {
     my $self = shift;
+    local $self->ec2->{raise_error} = 1;
     my $r    = $self->ec2->describe_spot_instance_requests($self->spotInstanceRequestId);
-    %$self   = %$r;
+    %$self   = %$r if $r;
+    return defined $r;
 }
 
 sub current_status {
+    my $self = shift;
+    $self->refresh;
+    return $self->status;
+}
+
+sub current_state {
     my $self = shift;
     $self->refresh;
     return $self->state;

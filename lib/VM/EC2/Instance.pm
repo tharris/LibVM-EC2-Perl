@@ -88,6 +88,8 @@ These object methods are supported:
                    as a string is equal to the instance's
                    availability zone.
 
+ availabilityZone -- Same as placement.
+
  kernelId       -- ID of the instance's kernel. CHANGEABLE.
 
  ramdiskId      -- ID of the instance's RAM disk. CHANGEABLE.
@@ -115,6 +117,13 @@ These object methods are supported:
                    with VPC NAT functionality. See the Amazon VPC User
                    Guide for details. CHANGEABLE.
 
+ networkInterfaceSet -- Return list of VM::EC2::ElasticNetworkInterface objects
+                   attached to this instance.
+
+ iamInstanceProfile -- The IAM instance profile (IIP) associated with this instance.
+
+ ebsOptimized       -- True if instance is optimized for EBS I/O.
+
  groupSet       -- List of VM::EC2::Group objects indicating the VPC
                    security groups in which this instance resides. Not to be
                    confused with groups(), which returns the security groups
@@ -135,7 +144,7 @@ These object methods are supported:
  blockDeviceMapping -- The block device mappings for the instance, represented
                    as a list of L<VM::EC2::BlockDevice::Mapping> objects.
 
- instanceLifeCycle-- "spot" if this instance is a spot instance, otherwise empty.
+ instanceLifeCycle -- "spot" if this instance is a spot instance, otherwise empty.
 
  spotInstanceRequestId -- The ID of the spot instance request, if applicable.
 
@@ -253,13 +262,18 @@ as returned by describe_addresses(). The reason for this is that the
 allocationId must be retrieved from the object in order to use in the
 call.
 
-=head2 $bool = $ec2->disassociate_address
+=head2 $bool = $instance->disassociate_address
 
 Disassociate an elastic IP address from this instance. if any. The
 result will be true if disassociation was successful. Note that for a
 short period of time (up to a few minutes) after disassociation, the
 instance will have no public IP address and will be unreachable from
 the internet.
+
+=head2 @list = $instance->network_interfaces
+
+Return the network interfaces attached to this instance as a set of
+VM::EC2::NetworkInterface objects (VPC only).
 
 =head2 $instance->refresh
 
@@ -304,11 +318,15 @@ Arguments:
 In the unnamed argument version you can provide the name and
 optionally the description of the resulting image.
 
+=head2 $boolean = $instance->confirm_product_code($product_code)
+
+Return true if this instance is associated with the given product code.
+
 =head1 VOLUME MANAGEMENT
 
 =head2 $attachment = $instance->attach_volume($volume_id,$device)
 
-    =head2 $attachment = $instance->attach_volume(-volume_id=>$volume_id,-device=>$device)
+=head2 $attachment = $instance->attach_volume(-volume_id=>$volume_id,-device=>$device)
 
 Attach volume $volume_id to this instance using virtual device
 $device. Both arguments are required. The result is a
@@ -347,6 +365,35 @@ you can monitor by calling current_status():
        sleep 2;
     }
     print "volume is ready to go\n";
+
+=head1 NETWORK INTERFACE MANAGEMENT
+
+=head2 $attachment_id = $instance->attach_network_interface($interface_id => $device)
+
+=head2 $attachment_id = $instance->attach_network_interface(-network_interface_id=>$id,
+                                                            -device_index   => $device)
+
+This method attaches a network interface to the current instance using
+the indicated device index. You can use either an elastic network
+interface ID, or a VM::EC2::NetworkInterface object. You may use an
+integer for -device_index, or use the strings "eth0", "eth1" etc.
+
+Required arguments:
+
+ -network_interface_id ID of the network interface to attach.
+ -device_index         Network device number to use (e.g. 0 for eth0).
+
+On success, this method returns the attachmentId of the new attachment
+(not a VM::EC2::NetworkInterface::Attachment object, due to an AWS API
+inconsistency).
+
+=head2 $boolean = $instance->detach_network_interface($interface_id [,$force])
+
+This method detaches a network interface from the current instance. If
+a true second argument is provided, then the detachment will be
+forced, even if the interface is in use.
+
+On success, this method returns a true value.
 
 =head1 ACCESSING INSTANCE METADATA
 
@@ -396,7 +443,10 @@ use VM::EC2::Group;
 use VM::EC2::Instance::State;
 use VM::EC2::Instance::State::Reason;
 use VM::EC2::BlockDevice::Mapping;
+use VM::EC2::NetworkInterface;
 use VM::EC2::Instance::Placement;
+use VM::EC2::ProductCode;
+use VM::EC2::Instance::IamProfile;
 use MIME::Base64 qw(encode_base64 decode_base64);
 use Carp 'croak';
 
@@ -446,15 +496,23 @@ sub valid_fields {
               placement
               kernelId
               ramdiskId
+              platform
               monitoring
+              subnetId
+              vpcId
               privateIpAddress
               ipAddress
               sourceDestCheck
+              networkInterfaceSet
+              iamInstanceProfile
+              ebsOptimized
+              groupSet
+              stateReason
               architecture
               rootDeviceType
               rootDeviceName
               blockDeviceMapping
-              instanceLifecycle
+              instanceLifeCycle
               spotInstanceRequestId
               virtualizationType
               clientToken
@@ -485,6 +543,12 @@ sub sourceDestCheck {
     return $check eq 'true';
 }
 
+sub ebsOptimized {
+    my $self = shift;
+    my $opt  = $self->SUPER::ebsOptimized;
+    return $opt eq 'true';
+}
+
 sub groupSet {
     my $self = shift;
     my $groupSet = $self->SUPER::groupSet;
@@ -497,6 +561,8 @@ sub placement {
     my $p = $self->SUPER::placement or return;
     return VM::EC2::Instance::Placement->new($p,$self->aws,$self->xmlns,$self->requestId);
 }
+
+sub availabilityZone { shift->placement }
 
 sub monitoring {
     my $self = shift;
@@ -592,12 +658,44 @@ sub instanceInitiatedShutdownBehavior {
     return $self->aws->describe_instance_attribute($self,'instanceInitiatedShutdownBehavior');
 }
 
+sub networkInterfaceSet {
+    my $self = shift;
+    my $set  = $self->SUPER::networkInterfaceSet or return;
+    return map {VM::EC2::NetworkInterface->new($_,$self->aws)} @{$set->{item}};
+}
+
+sub network_interfaces { shift->networkInterfaceSet }
+
+sub iamInstanceProfile {
+    my $self = shift;
+    my $profile = $self->SUPER::iamInstanceProfile or return;
+    return VM::EC2::Instance::IamProfile->new($profile,$self->aws);
+}
+
 sub current_status {
     my $self = shift;
-    my ($i)  = $self->aws->describe_instances(-instance_id=>$self->instanceId);
-    $i or croak "invalid instance: ",$self->instanceId;
-    $self->refresh($i) or return VM::EC2::Instance::State->invalid_state($self->aws);
-    return $i->instanceState;
+    my $retry = 0;
+    until ($self->refresh) {
+        if (++$retry > 10) {
+            croak "invalid instance: ",$self->instanceId;
+	}
+        sleep 2;
+    }
+    return $self->instanceState;
+}
+
+sub current_status_async {
+    my $self = shift;
+    my $to_caller = VM::EC2->condvar;
+
+    my $cv = $self->aws->describe_instances_async(-instance_id=>$self->instanceId);
+
+    $cv->cb(sub {
+	my $i = shift->recv;
+	$to_caller->send($i->instanceState)
+	    });
+
+    return $to_caller;
 }
 
 sub current_state { shift->current_status } # alias
@@ -670,6 +768,8 @@ sub upTime {
     return time()-$sec;
 }
 
+sub up_time { shift->upTime }
+
 sub associate_address {
     my $self = shift;
     my $addr = shift or croak "Usage: \$instance->associate_address(\$elastic_address)";
@@ -688,13 +788,16 @@ sub disassociate_address {
 sub refresh {
     my $self = shift;
     my $i   = shift;
-    ($i) = $self->aws->describe_instances(-instance_id=>$self->instanceId) unless $i;
-    %$self  = %$i;
+    local $self->aws->{raise_error} = 1;
+    ($i) = $self->aws->describe_instances_sync(-instance_id=>$self->instanceId) unless $i;
+    %$self  = %$i if $i;
+    return defined $i;
 }
 
 sub console_output {
     my $self = shift;
-    my $output = $self->aws->get_console_output(-instance_id=>$self->instanceId);
+    VM::EC2::Dispatch::load_module('VM::EC2::REST::general');
+    my $output = $self->aws->get_console_output_sync(-instance_id=>$self->instanceId);
     return $output->output;
 }
 
@@ -725,7 +828,20 @@ sub attach_volume {
     $args{-volume_id} && $args{-device}
        or croak "usage: \$vol->attach(\$instance_id,\$device)";
     $args{-instance_id} = $self->instanceId;
-    return $self->aws->attach_volume(%args);
+
+    my $result = $self->aws->attach_volume(%args);
+
+    if ($VM::EC2::ASYNC) {
+	$result->cb(
+	    sub {
+		my $attach = shift->recv;
+		$self->refresh if $attach;
+	    });
+    } else {
+	$self->refresh if $result;
+    }
+
+    return $result;
 }
 
 sub detach_volume {
@@ -747,7 +863,76 @@ sub detach_volume {
 	%args = @_;
     }
     $args{-instance_id} = $self->instanceId;
-    return $self->aws->detach_volume(%args);
+    my $result = $self->aws->detach_volume(%args);
+    if ($VM::EC2::ASYNC) {
+	$result->cb(
+	    sub {
+		my $attach = shift->recv;
+		$self->refresh if $attach;
+	    });
+    } else {
+	$self->refresh if $result;
+    }
+
+    return $result;
+}
+
+sub attach_network_interface {
+    my $self = shift;
+    my %args;
+    if (@_==2 && $_[0] !~ /^-/) {
+	@args{qw(-network_interface_id -device_index)} = @_; 
+    } else {
+	%args = @_;
+    }
+    $args{-network_interface_id} && $args{-device_index}
+       or croak "usage: \$instance->attach_network_interface(\$network_interface_id,\$device_index)";
+
+    $args{-instance_id} = $self->instanceId;
+
+    my $result = $self->aws->attach_network_interface(%args);
+    if ($VM::EC2::ASYNC) {
+	$result->cb(
+	    sub {
+		my $attach = shift->recv;
+		if ($attach) {
+		    $self->refresh;
+		    eval {$args{-network_interface_id}->refresh};
+		}
+	    });
+    }
+    elsif ($result) {
+	$self->refresh;
+	eval {$args{-network_interface_id}->refresh};
+    }
+
+    return $result;
+}
+
+sub detach_network_interface {
+    my $self = shift;
+    my ($nid,$force) = @_;
+    $nid or croak "usage: \$instance=>detach_network_interface(\$network_interface_id [,\$force])";
+    my ($attachment) = map {$_->attachment} grep { $_->networkInterfaceId eq $nid } $self->network_interfaces;
+    $attachment or croak "$self is not attached to $nid";
+    my $result = $self->aws->detach_network_interface($attachment,$force);
+
+    if ($VM::EC2::ASYNC) {
+	$result->cb(
+	    sub {
+		my $attach = shift->recv;
+		if ($attach) {
+		    $self->refresh;
+		    eval {$nid->refresh};
+		}
+	    });
+    }
+    elsif ($result) {
+	$self->refresh;
+	eval {$nid->refresh} if $result;
+    }
+
+    return $result;
 }
 
 sub metadata {
@@ -758,7 +943,13 @@ sub metadata {
 sub productCodes {
     my $self = shift;
     my $codes = $self->SUPER::productCodes or return;
-    return map {$_->{productCode}} @{$codes->{item}};
+    return map {VM::EC2::ProductCode->new($_)} @{$codes->{item}};
+}
+
+sub confirm_product_code {
+    my $self = shift;
+    my $code = shift;
+    return $self->aws->confirm_product_instance($self,$code);
 }
 
 1;

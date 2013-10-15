@@ -55,7 +55,7 @@ These object methods are supported:
                   creation.
  rootDeviceType -- The root device type. One of "ebs" or
                   "instance-store".
- rootDeviceMape -- Name of the root device, e.g. "/dev/sda1"
+ rootDeviceName -- Name of the root device, e.g. "/dev/sda1"
  blockDeviceMapping -- List of block devices attached to this
                    image. Each element is a
                    VM::EC2::BlockDevice.
@@ -181,7 +181,21 @@ privileges to the owner only.
 
 See also authorized_users().
 
+=head2 $copy = $image->copy(-region => $region, -name => $name, -description => $desc)
 
+Copies the image to another region.
+
+Required arguments:
+
+ -region           The region to copy to
+
+Optional arguments:
+
+ -name             The name of the image.
+
+ -description      The description of the image.
+
+ -client_token     Unique identifier to ensure idempotency of the request
 
 =head2 $image->refresh
 
@@ -222,6 +236,7 @@ use base 'VM::EC2::Generic';
 use VM::EC2::BlockDevice;
 use VM::EC2::Image::LaunchPermission;
 use VM::EC2::Instance::State::Reason;
+use VM::EC2::ProductCode;
 
 use Carp 'croak';
 
@@ -245,8 +260,12 @@ sub stateReason {
 
 sub productCodes {
     my $self = shift;
-    my $codes = $self->SUPER::productCodes or return;
-    return map {$_->{productCode}} @{$codes->{item}};
+    if (@_) {
+	$self->aws->modify_image_attribute($self,-product_code=>\@_);
+    } else {
+	my $codes = $self->SUPER::productCodes or return;
+	return map {VM::EC2::ProductCode->new($_)} @{$codes->{item}};
+    }
 }
 
 sub blockDeviceMapping {
@@ -310,11 +329,44 @@ sub current_status {
     return $self->imageState;
 }
 
+sub current_status_async {
+    my $self = shift;
+    my $to_caller = VM::EC2->condvar;
+
+    my $cv = $self->aws->describe_images_async(-image_id=>$self->imageId);
+
+    $cv->cb(sub {
+	my $i = shift->recv;
+	$to_caller->send($i->imageState)
+	    });
+
+    return $to_caller;
+}
+
+
 sub refresh {
     my $self = shift;
     my $i   = shift;
     ($i) = $self->aws->describe_images(-image_id=>$self->imageId) unless $i;
-    %$self  = %$i;
+    %$self  = %$i if $i;
+    return defined $i;
+}
+
+sub copy {
+    my $self = shift;
+    my %args = @_;
+    my $image_id = $self->imageId;
+    my $name = $args{-name};
+    my $desc = $args{-description} || $args{-desc};
+    my $token = $args{-client_token} || $args{-token};
+    my $region = $args{-region} or croak "copy(): -region argument required";
+    my $orig_region = $self->aws->region;
+    # set region to dest region in ec2 object
+    $self->aws->region($region);
+    my $image = $self->aws->copy_image(-source_region=>$orig_region, -source_image_id=>$image_id, -name => $name, -description=>$desc, -client_token => $token);
+    # set region back
+    $self->aws->region($orig_region);
+    return $image;
 }
 
 1;
