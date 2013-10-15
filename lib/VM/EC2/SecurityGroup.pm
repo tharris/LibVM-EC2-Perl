@@ -16,7 +16,7 @@ VM::EC2::SecurityGroup - Object describing an Amazon EC2 security group
       $desc = $sg->groupDescription;
       $tags = $sg->tags;
       @inbound_permissions  = $sg->ipPermissions;
-      @outbound_permissions = $sg->ipPermissionEgress;
+      @outbound_permissions = $sg->ipPermissionsEgress;
       for $i (@inbound_permissions) {
          $protocol = $i->ipProtocol;
          $fromPort = $i->fromPort;
@@ -139,7 +139,7 @@ Here are some examples:
 
  # ICMP on echo (ping) port from anyone
  $sg->authorize_incoming(-protocol  => 'icmp',
-                         -port      => 0,
+                         -port      => -1,
                          -source_ip => '0.0.0.0/0');
 
  # TCP to port 25 (mail) from instances belonging to
@@ -219,6 +219,7 @@ please see DISCLAIMER.txt for disclaimers of warranty.
 
 use strict;
 use base 'VM::EC2::Generic';
+use VM::EC2 'security_group';
 use VM::EC2::SecurityGroup::IpPermission;
 use Carp 'croak';
 
@@ -226,7 +227,10 @@ sub valid_fields {
     return qw(ownerId groupId groupName groupDescription vpcId ipPermissions ipPermissionsEgress tagSet);
 }
 
-sub primary_id { shift->groupId }
+sub primary_id { 
+    my $self = shift;
+    return $self->groupId || $self->groupName;
+}
 
 sub name { shift->groupName }
 
@@ -262,21 +266,6 @@ sub ipPermissionsEgress {
     return @p;
 }
 
-# generate a hash of the ingress permissions, for use in modification
-sub _ingress_permissions {
-    my $self = shift;
-    return $self->{_ingress_permissions} if exists $self->{_ingress_permissions};
-    my %h = map {("$_" => $_)} $self->ipPermissions;
-    return $self->{_ingress_permissions} = \%h;
-}
-
-sub _egress_permissions {
-    my $self = shift;
-    return $self->{_egress_permissions} if exists $self->{_egress_permissions};
-    my %h = map {("$_" => $_)} $self->ipPermissionsEgress;
-    return $self->{_egress_permissions} = \%h;
-}
-
 sub _uncommitted_permissions {
     my $self = shift;
     my ($action,$direction) = @_;   # e.g. 'Authorize','Ingress'
@@ -287,34 +276,30 @@ sub _uncommitted_permissions {
 sub authorize_incoming {
     my $self = shift;
     my $permission = $self->_new_permission(@_);
-    return if $self->_ingress_permissions->{$permission};  # already defined
     $self->{uncommitted}{Authorize}{Ingress}{$permission}=$permission;
 }
 
 sub authorize_outgoing {
     my $self = shift;
     my $permission = $self->_new_permission(@_);
-    return if $self->_egress_permissions->{$permission};  # already defined
     $self->{uncommitted}{Authorize}{Egress}{$permission}=$permission;
 }
 
 sub revoke_incoming {
     my $self = shift;
-    my $permission = $_[0] =~ /^-/ ? $self->_new_permission(@_) : shift;
+    my $permission = $_[0] =~ /^-[A-Za-z]/ ? $self->_new_permission(@_) : shift;
     if ($self->{uncommitted}{Authorize}{Ingress}{$permission}) {
 	delete $self->{uncommitted}{Authorize}{Ingress}{$permission};
     }
-    return unless $self->_ingress_permissions->{$permission};
     $self->{uncommitted}{Revoke}{Ingress}{$permission}=$permission;
 }
 
 sub revoke_outgoing {
     my $self = shift;
-    my $permission = $_[0] =~ /^-/ ? $self->_new_permission(@_) : shift;
+    my $permission = $_[0] =~ /^-[A-Za-z]/ ? $self->_new_permission(@_) : shift;
     if ($self->{uncommitted}{Authorize}{Egress}{$permission}) {
 	delete $self->{uncommitted}{Authorize}{Egress}{$permission};
     }
-    return unless $self->_egress_permissions->{$permission};
     $self->{uncommitted}{Revoke}{Egress}{$permission}=$permission;
 }
 
@@ -322,9 +307,11 @@ sub revoke_outgoing {
 sub update {
     my $self = shift;
     my $aws  = $self->aws;
-    local $aws->{error};  # so we can do a double-fetch
     my $result = $aws->update_security_group($self);
-    $self->refresh;
+    {
+	local $aws->{error};  # so we can do a double-fetch
+	$self->refresh;
+    }
     return $result;
 }
 
@@ -332,8 +319,9 @@ sub write { shift->update }
 
 sub refresh {
     my $self = shift;
-    my $i    = $self->aws->describe_security_groups($self->groupId) or return;
-    %$self   = %$i;
+    my $i    = $self->aws->describe_security_groups($self->groupId);
+    %$self   = %$i if $i;
+    return defined $i;
 }
 
 sub _new_permission {
@@ -347,7 +335,7 @@ sub _new_permission {
 
     $args{-source_ip} ||= $args{-source};
 
-    my $ports     = $args{-port} || $args{-ports};
+    my $ports     = defined($args{-port}) ? $args{-port} : $args{-ports};
     my ($from_port,$to_port);
     if ($ports =~ /^(\d+)\.\.(\d+)$/) {
 	$from_port = $1;

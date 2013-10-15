@@ -38,11 +38,15 @@ The following object methods are supported:
  
  volumeId         -- ID of this volume.
  size             -- Size of this volume (in GB).
- snapshotId       -- ID of snapshot this 
+ snapshotId       -- ID of snapshot this volume was created from.
  availabilityZone -- Availability zone in which this volume resides.
  status           -- Volume state, one of "creating", "available",
                      "in-use", "deleting", "deleted", "error"
  createTime       -- Timestamp for when volume was created.
+ volumeType       -- The volume type, one of "standard" or "io1"
+ iops             -- The number of I/O operations per second that the volume
+                     supports, an integer between 100 and 4000. Only valid for
+                     volumes of type "io1".
  tags             -- Hashref containing tags associated with this group.
                      See L<VM::EC2::Generic>.
 
@@ -143,6 +147,15 @@ Here is an example:
 This returns the up-to-date status of the volume. It works by calling
 refresh() and then returning status().
 
+=head2 $boolean = $vol->auto_enable_io([$new_boolean])
+
+Get or set the auto-enable IO flag.
+
+=head2 $boolean = $vol->enable_volume_io()
+
+Enable volume I/O after it has been disabled by an Amazon health
+check. If successful, the call will return true.
+
 =head1 STRING OVERLOADING
 
 When used in a string context, this object will interpolate the
@@ -173,12 +186,13 @@ please see DISCLAIMER.txt for disclaimers of warranty.
 use strict;
 use base 'VM::EC2::Generic';
 use VM::EC2::BlockDevice::Attachment;
+use VM::EC2::ProductCode;
 use Carp 'croak';
 
 sub valid_fields {
     my $self = shift;
     return qw(volumeId size snapshotId availabilityZone status 
-              createTime attachmentSet tagSet);
+              createTime attachmentSet volumeType iops tagSet);
 }
 
 sub primary_id {shift->volumeId}
@@ -249,10 +263,50 @@ sub current_status {
     $self->status;
 }
 
+sub current_status_async {
+    my $self = shift;
+    my $to_caller = VM::EC2->condvar;
+
+    my $cv = $self->aws->describe_volumes_async($self->volumeId);
+
+    $cv->cb(sub {
+	my $i = shift->recv;
+	if ($i) {
+	    $to_caller->send($i->status);
+	} else {
+	    $to_caller->send;
+	}
+	    });
+
+    return $to_caller;
+}
+
+
 sub refresh {
     my $self = shift;
+    local $self->aws->{raise_error} = 1;
     my $v    = $self->aws->describe_volumes($self->volumeId);
-    %$self   = %$v;
+    %$self   = %$v if $v;
+    return defined $v;
 }
+
+sub auto_enable_io {
+    my $self = shift;
+    return $self->aws->modify_volume_attribute($self,
+					       -auto_enable_io => shift) if @_;
+    return $self->aws->describe_volume_attribute($self,'autoEnableIO');
+}
+
+sub enable_io {
+    my $self = shift;
+    $self->aws->enable_volume_io($self);
+}
+
+sub product_codes {
+    my $self = shift;
+    my @codes = $self->aws->describe_volume_attribute($self,'productCodes');
+    return map {VM::EC2::ProductCode->new($_,$self->aws)} @codes;
+}
+
 
 1;

@@ -1,8 +1,9 @@
 This is an interface to Amazon EC2 REST tools that follows the
-2011-05-15 API. I created it because I needed access to the Tag and
+2013-06-15 API. I created it because I needed access to the Tag and
 TagSet interfaces, and neither euca2ools nor Net::Amazon::EC2 provided
-this functionality. The core Amazon API is supported, but support for
-VPC, clusters, spot instances and reserved instances is incomplete.
+this functionality. Almost all of the Amazon API is supported, but API
+calls for VM/volume import, bundle task management, and reserved instance
+marketplace are not currently implemented.
 
 The module provides an extensible object-oriented interface as
 illustrated by the following code:
@@ -59,6 +60,17 @@ illustrated by the following code:
      $img->make_public(1);
  }
 
+Copying AMIs Between Regions
+----------------------------
+
+This library provides a command-line script that makes it easy to move
+an EBS-backed Amazon Machine Image (AMI) from one region to another.
+
+  migrate-ebs-image.pl --from us-east-1 --to ap-southeast-1 ami-123456
+
+This script will be installed for you when you install the library.
+
+
 Development and bug reports
 ---------------------------
 
@@ -76,8 +88,18 @@ account for yourself and then either:
 
 See http://help.github.com/ for help getting started.
 
+Credits
+-------
+
+Many thanks to Lance Kinley, who contributed support for Network ACLs,
+VPC VPNs, Elastic Load Balancing, and many smaller feature
+enhancements as well as bug and documentation fixes.
+
+Author
+------
+
 Lincoln D. Stein <lincoln.stein@gmail.com>
-28 July 2011
+13 September 2012
 
 
 

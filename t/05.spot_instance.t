@@ -22,8 +22,8 @@ SKIP: {
 
 skip "account information unavailable",TEST_COUNT unless setup_environment();
 
-require_ok('VM::EC2');
-$ec2 = VM::EC2->new(-print_error=>1) or BAIL_OUT("Can't load VM::EC2 module");
+use_ok('VM::EC2',':standard','spot_instance');
+$ec2 = VM::EC2->new(-print_error=>1,-region=>'us-east-1') or BAIL_OUT("Can't load VM::EC2 module");
 
 my @requests = $ec2->request_spot_instances(-spot_price    => 0.001,  # too low - will never be satisfied
 					    -instance_type => 't1.micro',
@@ -33,7 +33,7 @@ my @requests = $ec2->request_spot_instances(-spot_price    => 0.001,  # too low 
 					    -security_group => 'default') or die $ec2->error_str;
 
 is(scalar @requests,4,'Correct number of spot instances requested');
-my %state = map {$_->current_status => 1} @requests;
+my %state = map {$_->current_state => 1} @requests;
 my @state = keys %state;
 is("@state",'open','Spot instances are all open');
 
@@ -43,7 +43,7 @@ is($r,$requests[0],'describe_spot_instance_requests works');
 my @c = $ec2->cancel_spot_instance_requests(@requests);
 is(scalar @c, scalar @requests,'cancel_spot_instance_requests working as expected');
 
-%state = map {$_->current_status => 1} @requests;
+%state = map {$_->current_state => 1} @requests;
 @state = keys %state;
 is("@state",'cancelled','spot instances are now cancelled');
 }

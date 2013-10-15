@@ -135,6 +135,15 @@ Create a new volume from this snapshot. Arguments are:
 If -size is not provided, then the new volume will have the same size as
 the snapshot. 
 
+Optional Arguments:
+
+ -volume_type          -- The volume type.  standard or io1, default is
+                          standard
+
+ -iops                 -- The number of I/O operations per second (IOPS) that
+                          the volume supports.  Range is 100 to 4000.  Required
+                          when volume type is io1.
+
 On success, the returned value is a L<VM::EC2::Volume> object.
 
 =head2 $status = $snap->current_status
@@ -152,9 +161,9 @@ Modify the createVolumePermission attribute to allow the "all" group
 to create volumes from this snapshot. Provide a true value to make the
 snapshot public, a false one to make it private.
 
-=head2 @user_ids = $image->createVolumePermissions()
+=head2 @user_ids = $snap->createVolumePermissions()
 
-=head2 @user_ids = $image->authorized_users
+=head2 @user_ids = $snap->authorized_users
 
 Returns a list of user IDs with createVolume permissions for this
 snapshot. The result is a list of L<VM::EC2::Snapshot::CreateVolumePermission>
@@ -163,11 +172,11 @@ user ID, or the group named "all."
 
 The two methods are aliases of each other.
 
-=head2 $boolean = $image->add_authorized_users($id1,$id2,...)
+=head2 $boolean = $snap->add_authorized_users($id1,$id2,...)
 
-=head2 $boolean = $image->remove_authorized_users($id1,$id2,...)
+=head2 $boolean = $snap->remove_authorized_users($id1,$id2,...)
 
-=head2 $boolean = $image->reset_authorized_users
+=head2 $boolean = $snap->reset_authorized_users
 
 These methods add and remove user accounts which have createVolume
 permissions for the snapshot. The result code indicates whether the
@@ -180,7 +189,7 @@ creation to the owner only.
 
 See also authorized_users().
 
-=head2 $size = $image->size
+=head2 $size = $snap->size
 
 Alias to volumeSize, provided for consistency with
 VM::EC2::Volume->size.
@@ -189,6 +198,18 @@ VM::EC2::Volume->size.
 
 Refreshes the snapshot from information provided by AWS. Use before
 checking progress or other changeable elements.
+
+=head2 $snapshot_copy = $snapshot->copy(-region=>$dest_region, -description=>$desc)
+
+Copies the snapshot to the same or different region.
+
+Required Argument:
+ -region        The region to copy the snapshot to
+
+Optional Argument:
+ -description   Description of the new snapshot
+
+Returns a VM::EC2::Snapshot object if successful.
 
 =head1 STRING OVERLOADING
 
@@ -219,6 +240,7 @@ please see DISCLAIMER.txt for disclaimers of warranty.
 use strict;
 use base 'VM::EC2::Generic';
 use VM::EC2::Snapshot::CreateVolumePermission;
+use VM::EC2::ProductCode;
 use Carp 'croak';
 
 sub valid_fields {
@@ -253,8 +275,10 @@ sub to_volumes {
 
 sub refresh {
     my $self = shift;
+    local $self->aws->{raise_error} = 1;
     my $s = $self->aws->describe_snapshots($self);
-    %$self  = %$s;
+    %$self  = %$s if $s;
+    return defined $s
 }
 
 sub register_image {
@@ -298,6 +322,21 @@ sub current_status {
     return $self->status;
 }
 
+sub current_status_async {
+    my $self = shift;
+    my $to_caller = VM::EC2->condvar;
+
+    my $cv = $self->aws->describe_snapshots_async(-snapshot_id=>$self->snapshotId);
+
+    $cv->cb(sub {
+	my $i = shift->recv;
+	$to_caller->send($i->status)
+	    });
+
+    return $to_caller;
+}
+
+
 sub createVolumePermissions {
     my $self = shift;
     return map {VM::EC2::Snapshot::CreateVolumePermission->new($_,$self->aws)}
@@ -339,5 +378,26 @@ sub reset_authorized_users {
     $self->aws->reset_snapshot_attribute($self->snapshotId,'createVolumePermission');
 }
 
+
+sub product_codes {
+    my $self = shift;
+    my @codes = $self->aws->describe_snapshot_attribute($self,'productCodes');
+    return map {VM::EC2::ProductCode->new($_,$self->aws)} @codes;
+}
+
+sub copy {
+    my $self = shift;
+    my %args = @_;
+    my $snap_id = $self->snapshotId;   
+    my $desc    = $args{-description} || $args{-desc};
+    my $region  = $args{-region} or croak "copy(): -region argument required";
+    my $orig_region = $self->aws->region;
+
+    # create a new EC2 object for the destination
+    my $dest_aws = $self->aws->clone;
+    $dest_aws->region($region);
+    my $snapshot = $dest_aws->copy_snapshot(-source_region=>$orig_region, -source_snapshot_id=>$snap_id, -description=>$desc);
+    return $snapshot;
+}
 
 1;
